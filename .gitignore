@@ -12,6 +12,8 @@ build/
 develop-eggs/
 dist/
 downloads/
+datasets/
+myenv/
 eggs/
 .eggs/
 lib/
