@@ -15,17 +15,13 @@ from transformers import BertTokenizer, BertModel
 
 class BertEmbeddingWrapper:
     """Wrapper class to replace bert_embedding with transformers"""
-    def __init__(self, model_name='bert-base-uncased', use_cuda=True):
+    def __init__(self, model_name='bert-base-uncased', use_cuda=False):  # Set to False
         self.tokenizer = BertTokenizer.from_pretrained(model_name)
         self.model = BertModel.from_pretrained(model_name)
         self.model.eval()  # Set to evaluation mode
         
-        # Move model to GPU if available and requested
-        if use_cuda and torch.cuda.is_available():
-            self.model = self.model.to('cuda')
-            self.device = 'cuda'
-        else:
-            self.device = 'cpu'
+        # Always use CPU for DataLoader workers to avoid CUDA fork issues
+        self.device = 'cpu'
         
     def __call__(self, sentences):
         """
@@ -45,8 +41,8 @@ class BertEmbeddingWrapper:
                 inputs = self.tokenizer(sentence, return_tensors='pt', 
                                        padding=True, truncation=True, max_length=512)
                 
-                # Move inputs to the same device as model
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                # Keep on CPU
+                # inputs already on CPU by default
                 
                 # Get BERT embeddings
                 outputs = self.model(**inputs)
@@ -55,8 +51,8 @@ class BertEmbeddingWrapper:
                 # Shape: [batch_size, sequence_length, hidden_size]
                 embeddings = outputs.last_hidden_state.squeeze(0)  # Remove batch dimension
                 
-                # Convert to numpy (move to CPU first if on GPU)
-                embeddings_np = embeddings.cpu().numpy()
+                # Convert to numpy
+                embeddings_np = embeddings.numpy()
                 
                 # Get tokens for reference (optional)
                 tokens = self.tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
@@ -172,17 +168,25 @@ class LV2D(Dataset):
     def __getitem__(self, idx):
 
         mask_filename = self.mask_list[idx]  # Co
-        mask = cv2.imread(os.path.join(self.output_path, mask_filename), 0)
+        mask_path = os.path.join(self.output_path, mask_filename)
+        
+        # Read mask
+        mask = cv2.imread(mask_path, 0)
+        if mask is None:
+            raise FileNotFoundError(f"Cannot read mask: {mask_path}")
+            
         mask = cv2.resize(mask, (self.image_size, self.image_size))
         mask[mask <= 0] = 0
         mask[mask > 0] = 1
         mask = correct_dims(mask)
+        
         text = self.rowtext[mask_filename]
         text = text.split('\n')
         text_token = self.bert_embedding(text)
         text = np.array(text_token[0][1])
         if text.shape[0] > 14:
             text = text[:14, :]
+            
         if self.one_hot_mask:
             assert self.one_hot_mask > 0, 'one_hot_mask must be nonnegative'
             mask = torch.zeros((self.one_hot_mask, mask.shape[1], mask.shape[2])).scatter_(0, mask.long(), 1)
@@ -220,25 +224,34 @@ class ImageToImage2D(Dataset):
     def __getitem__(self, idx):
 
         if self.task_name == 'Covid19':
-            mask_filename = self.mask_list[idx]
-            image_filename = mask_filename  # Adjust based on your actual naming convention
+            # For Covid19: use index to get corresponding files from each folder
+            image_filename = self.images_list[idx]  # Get image from img folder
+            mask_filename = self.mask_list[idx]      # Get mask from labelcol folder
         else:  # MoNuSeg
             image_filename = self.images_list[idx]
             mask_filename = image_filename[: -3] + "png"
-            
-        image = cv2.imread(os.path.join(self.input_path, image_filename))
+
+        # Build full paths
+        image_path = os.path.join(self.input_path, image_filename)
+        mask_path = os.path.join(self.output_path, mask_filename)
+
+        # Read image
+        image = cv2.imread(image_path)
+        if image is None:
+            raise FileNotFoundError(f"Cannot read image: {image_path}")
         image = cv2.resize(image, (self.image_size, self.image_size))
 
-        # read mask image
-        mask = cv2.imread(os.path.join(self.output_path, mask_filename), 0)
+        # Read mask image
+        mask = cv2.imread(mask_path, 0)
         if mask is None:
-            raise FileNotFoundError(f"Cannot read mask: {os.path.join(self.output_path, mask_filename)}")
+            raise FileNotFoundError(f"Cannot read mask: {mask_path}")
         mask = cv2.resize(mask, (self.image_size, self.image_size))
         mask[mask <= 0] = 0
         mask[mask > 0] = 1
 
-        # correct dimensions if needed
+        # Correct dimensions if needed
         image, mask = correct_dims(image, mask)
+
         text = self.rowtext[mask_filename]
         text = text.split('\n')
         text_token = self.bert_embedding(text)
