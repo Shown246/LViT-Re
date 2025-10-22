@@ -1,6 +1,6 @@
 # Byte-compiled / optimized / DLL files
-__pycache__/
-nets/__pycache__/
+*__pycache__/
+*/nets/__pycache__/
 *.py[codz]
 *$py.class
 
@@ -57,6 +57,7 @@ cover/
 # Translations
 *.mo
 *.pot
+*.pyc
 
 # Django stuff:
 *.log

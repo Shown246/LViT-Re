@@ -15,21 +15,21 @@ os.environ['PYTHONHASHSEED'] = str(seed)
 cosineLR = True  # Use cosineLR or not
 n_channels = 3
 n_labels = 1  # MoNuSeg & Covid19
-epochs = 20
+epochs = 200
 img_size = 224
 print_frequency = 1
 save_frequency = 5000
 vis_frequency = 10
-early_stopping_patience = 5
+early_stopping_patience = 50
 
-pretrain = True  # Use the pre-trained weights on ImageNet
-task_name = 'MoNuSeg' 
-# task_name = 'Covid19'
-learning_rate = 1e-3  # MoNuSeg: 1e-3, Covid19: 3e-4
+pretrain = False  # Use the pre-trained weights on ImageNet
+# task_name = 'MoNuSeg' 
+task_name = 'Covid19'
+learning_rate = 3e-3  # MoNuSeg: 1e-3, Covid19: 3e-4
 batch_size = 2  # For LViT-T, 2 is better than 4
 
-# model_name = 'LViT'
-model_name = 'LViT_pretrain'
+model_name = 'LViT'
+# model_name = 'LViT_pretrain'
 
 train_dataset = './datasets/' + task_name + '/Train_Folder/'
 val_dataset = './datasets/' + task_name + '/Val_Folder/'

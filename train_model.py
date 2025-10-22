@@ -75,7 +75,7 @@ def main_loop(batch_size=config.batch_size, model_type='', tensorboard=True):
                                        image_size=config.img_size)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf, image_size=config.img_size)
     elif config.task_name == 'Covid19':
-        text = read_text(config.task_dataset + 'Train_Val_text.xlsx')
+        text = read_text(config.task_dataset + 'Train_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, text, train_tf,
                                        image_size=config.img_size)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, text, val_tf, image_size=config.img_size)
