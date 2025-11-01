@@ -11,33 +11,39 @@ import warnings
 import weakref
 from PIL import Image
 from numpy import average, dot, linalg
-
 from torch.autograd import Variable
 from torch.optim.optimizer import Optimizer
 
-
 class WeightedBCE(nn.Module):
-
+    """Weighted Binary Cross Entropy loss with configurable positive/negative class weights"""
+    
     def __init__(self, weights=[0.4, 0.6]):
         super(WeightedBCE, self).__init__()
         self.weights = weights
 
     def forward(self, logit_pixel, truth_pixel):
-        # print("====",logit_pixel.size())
+        # Flatten predictions and ground truth
         logit = logit_pixel.view(-1)
         truth = truth_pixel.view(-1)
         assert (logit.shape == truth.shape)
+        
+        # Calculate binary cross entropy
         loss = F.binary_cross_entropy(logit, truth, reduction='none')
+        
+        # Separate positive and negative samples
         pos = (truth > 0.5).float()
         neg = (truth < 0.5).float()
         pos_weight = pos.sum().item() + 1e-12
         neg_weight = neg.sum().item() + 1e-12
+        
+        # Apply weighted loss normalized by class frequency
         loss = (self.weights[0] * pos * loss / pos_weight + self.weights[1] * neg * loss / neg_weight).sum()
-
         return loss
 
 
 class WeightedDiceLoss(nn.Module):
+    """Dice loss with pixel-level weighting based on ground truth"""
+    
     def __init__(self, weights=[0.5, 0.5]):  # W_pos=0.8, W_neg=0.2
         super(WeightedDiceLoss, self).__init__()
         self.weights = weights
@@ -47,12 +53,19 @@ class WeightedDiceLoss(nn.Module):
         logit = logit.view(batch_size, -1)
         truth = truth.view(batch_size, -1)
         assert (logit.shape == truth.shape)
+        
         p = logit.view(batch_size, -1)
         t = truth.view(batch_size, -1)
+        
+        # Create weight map based on ground truth values
         w = truth.detach()
         w = w * (self.weights[1] - self.weights[0]) + self.weights[0]
+        
+        # Apply weights to predictions and targets
         p = w * (p)
         t = w * (t)
+        
+        # Calculate Dice coefficient
         intersection = (p * t).sum(-1)
         union = (p * p).sum(-1) + (t * t).sum(-1)
         dice = 1 - (2 * intersection + smooth) / (union + smooth)
@@ -62,21 +75,31 @@ class WeightedDiceLoss(nn.Module):
 
 
 class BinaryDiceLoss(nn.Module):
+    """Standard Dice loss for binary segmentation"""
+    
     def __init__(self):
         super(BinaryDiceLoss, self).__init__()
 
     def forward(self, inputs, targets):
         N = targets.size()[0]
         smooth = 1
+        
+        # Flatten spatial dimensions
         input_flat = inputs.view(N, -1)
         targets_flat = targets.view(N, -1)
+        
+        # Calculate Dice coefficient per sample
         intersection = input_flat + targets_flat
         N_dice_eff = (2 * intersection.sum(1) + smooth) / (input_flat.sum(1) + targets_flat.sum(1) + smooth)
+        
+        # Return 1 - Dice as loss
         loss = 1 - N_dice_eff.sum() / N
         return loss
 
 
 class MultiClassDiceLoss(nn.Module):
+    """Dice loss for multi-class segmentation (averages across 5 classes)"""
+    
     def __init__(self, weight=None, ignore_index=None):
         super(MultiClassDiceLoss, self).__init__()
         self.weight = weight
@@ -84,10 +107,10 @@ class MultiClassDiceLoss(nn.Module):
         self.dice_loss = WeightedDiceLoss()
 
     def forward(self, inputs, targets):
-        # print(inputs.shape)
         assert inputs.shape == targets.shape, "predict & target shape do not match"
         total_loss = 0
-        # logits = F.softmax(inputs, dim=1)
+        
+        # Calculate Dice loss for each of 5 classes
         for i in range(5):
             dice_loss = self.dice_loss(inputs[:, i], targets[:, i])
             total_loss += dice_loss
@@ -96,11 +119,14 @@ class MultiClassDiceLoss(nn.Module):
 
 
 class DiceLoss(nn.Module):
+    """Dice loss with one-hot encoding and per-class loss calculation"""
+    
     def __init__(self, n_classes):
         super(DiceLoss, self).__init__()
         self.n_classes = n_classes
 
     def _one_hot_encoder(self, input_tensor):
+        """Convert class indices to one-hot encoding"""
         tensor_list = []
         for i in range(self.n_classes):
             temp_prob = input_tensor == i * torch.ones_like(input_tensor)
@@ -109,6 +135,7 @@ class DiceLoss(nn.Module):
         return output_tensor.float()
 
     def _dice_loss(self, score, target):
+        """Calculate Dice loss for a single class"""
         target = target.float()
         smooth = 1e-5
         intersect = torch.sum(score * target)
@@ -121,23 +148,32 @@ class DiceLoss(nn.Module):
     def forward(self, inputs, target, weight=None, softmax=False):
         if softmax:
             inputs = torch.softmax(inputs, dim=1)
+        
+        # Convert targets to one-hot encoding
         target = self._one_hot_encoder(target)
+        
         if weight is None:
             weight = [1] * self.n_classes
         assert inputs.size() == target.size(), 'predict & target shape do not match'
+        
+        # Calculate loss for specific classes and overall
         class_wise_dice = []
         loss = 0.0
         dice1 = self._dice_loss(inputs[:, 1], target[:, 1]) * weight[1]
         dice2 = self._dice_loss(inputs[:, 2], target[:, 2]) * weight[2]
         dice3 = self._dice_loss(inputs[:, 3], target[:, 3]) * weight[3]
+        
         for i in range(0, self.n_classes):
             dice = self._dice_loss(inputs[:, i], target[:, i])
             class_wise_dice.append(1.0 - dice.item())
             loss += dice * weight[i]
+        
         return loss / self.n_classes, dice1, dice2, dice3
 
 
 class WeightedDiceCE(nn.Module):
+    """Combined Dice and Cross Entropy loss"""
+    
     def __init__(self, dice_weight=0.5, CE_weight=0.5):
         super(WeightedDiceCE, self).__init__()
         self.CE_loss = nn.CrossEntropyLoss()
@@ -146,7 +182,7 @@ class WeightedDiceCE(nn.Module):
         self.dice_weight = dice_weight
 
     def _show_dice(self, inputs, targets):
-        # inputs = inputs.argmax(dim=1)
+        """Calculate Dice coefficients for evaluation"""
         dice, dice1, dice2, dice3 = self.dice_loss(inputs, targets)
         hard_dice_coeff = 1 - dice
         dice01 = 1 - dice1
@@ -163,6 +199,8 @@ class WeightedDiceCE(nn.Module):
 
 
 class WeightedDiceBCE_unsup(nn.Module):
+    """Combined Dice and BCE loss with additional unsupervised LV loss term"""
+    
     def __init__(self, dice_weight=1, BCE_weight=1):
         super(WeightedDiceBCE_unsup, self).__init__()
         self.BCE_loss = WeightedBCE(weights=[0.5, 0.5])
@@ -171,6 +209,7 @@ class WeightedDiceBCE_unsup(nn.Module):
         self.dice_weight = dice_weight
 
     def _show_dice(self, inputs, targets):
+        """Threshold predictions and calculate hard Dice coefficient"""
         inputs[inputs >= 0.5] = 1
         inputs[inputs < 0.5] = 0
         targets[targets > 0] = 1
@@ -181,12 +220,14 @@ class WeightedDiceBCE_unsup(nn.Module):
     def forward(self, inputs, targets, LV_loss):
         dice = self.dice_loss(inputs, targets)
         BCE = self.BCE_loss(inputs, targets)
+        # Combine losses with 0.1 weight for LV loss
         dice_BCE_loss = self.dice_weight * dice + self.BCE_weight * BCE + 0.1 * LV_loss
-
         return dice_BCE_loss
 
 
 class WeightedDiceBCE(nn.Module):
+    """Combined Dice and BCE loss for binary segmentation"""
+    
     def __init__(self, dice_weight=1, BCE_weight=1):
         super(WeightedDiceBCE, self).__init__()
         self.BCE_loss = WeightedBCE(weights=[0.5, 0.5])
@@ -195,6 +236,7 @@ class WeightedDiceBCE(nn.Module):
         self.dice_weight = dice_weight
 
     def _show_dice(self, inputs, targets):
+        """Threshold predictions and calculate hard Dice coefficient"""
         inputs[inputs >= 0.5] = 1
         inputs[inputs < 0.5] = 0
         targets[targets > 0] = 1
@@ -206,38 +248,38 @@ class WeightedDiceBCE(nn.Module):
         dice = self.dice_loss(inputs, targets)
         BCE = self.BCE_loss(inputs, targets)
         dice_BCE_loss = self.dice_weight * dice + self.BCE_weight * BCE
-
         return dice_BCE_loss
 
 
 def auc_on_batch(masks, pred):
-    '''Computes the mean Area Under ROC Curve over a batch during training'''
+    """Compute mean AUC score across batch"""
     aucs = []
     for i in range(pred.shape[1]):
         prediction = pred[i][0].cpu().detach().numpy()
-        # print("www",np.max(prediction), np.min(prediction))
         mask = masks[i].cpu().detach().numpy()
-        # print("rrr",np.max(mask), np.min(mask))
         aucs.append(roc_auc_score(mask.reshape(-1), prediction.reshape(-1)))
     return np.mean(aucs)
 
 
 def iou_on_batch(masks, pred):
-    '''Computes the mean Area Under ROC Curve over a batch during training'''
+    """Compute mean IoU (Jaccard) score across batch"""
     ious = []
-
     for i in range(pred.shape[0]):
         pred_tmp = pred[i][0].cpu().detach().numpy()
         mask_tmp = masks[i].cpu().detach().numpy()
+        
+        # Threshold predictions and masks
         pred_tmp[pred_tmp >= 0.5] = 1
         pred_tmp[pred_tmp < 0.5] = 0
         mask_tmp[mask_tmp > 0] = 1
         mask_tmp[mask_tmp <= 0] = 0
+        
         ious.append(jaccard_score(mask_tmp.reshape(-1), pred_tmp.reshape(-1)))
     return np.mean(ious)
 
 
 def dice_coef(y_true, y_pred):
+    """Calculate Dice coefficient between two binary masks"""
     smooth = 1e-5
     y_true_f = y_true.flatten()
     y_pred_f = y_pred.flatten()
@@ -246,25 +288,29 @@ def dice_coef(y_true, y_pred):
 
 
 def dice_on_batch(masks, pred):
-    '''Computes the mean Area Under ROC Curve over a batch during training'''
+    """Compute mean Dice coefficient across batch"""
     dices = []
-
     for i in range(pred.shape[0]):
         pred_tmp = pred[i][0].cpu().detach().numpy()
         mask_tmp = masks[i].cpu().detach().numpy()
+        
+        # Threshold predictions and masks
         pred_tmp[pred_tmp >= 0.5] = 1
         pred_tmp[pred_tmp < 0.5] = 0
         mask_tmp[mask_tmp > 0] = 1
         mask_tmp[mask_tmp <= 0] = 0
+        
         dices.append(dice_coef(mask_tmp, pred_tmp))
     return np.mean(dices)
 
 
 def save_on_batch(images1, masks, pred, names, vis_path):
-    '''Computes the mean Area Under ROC Curve over a batch during training'''
+    """Save predicted masks and ground truth masks as images"""
     for i in range(pred.shape[0]):
         pred_tmp = pred[i][0].cpu().detach().numpy()
         mask_tmp = masks[i].cpu().detach().numpy()
+        
+        # Convert to 0-255 range
         pred_tmp[pred_tmp >= 0.5] = 255
         pred_tmp[pred_tmp < 0.5] = 0
         mask_tmp[mask_tmp > 0] = 255
@@ -275,9 +321,9 @@ def save_on_batch(images1, masks, pred, names, vis_path):
 
 
 class _LRScheduler(object):
+    """Base class for learning rate schedulers"""
 
     def __init__(self, optimizer, last_epoch=-1):
-
         # Attach optimizer
         if not isinstance(optimizer, Optimizer):
             raise TypeError('{} is not an Optimizer'.format(
@@ -296,18 +342,12 @@ class _LRScheduler(object):
         self.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
         self.last_epoch = last_epoch
 
-        # Following https://github.com/pytorch/pytorch/issues/20124
-        # We would like to ensure that `lr_scheduler.step()` is called after
-        # `optimizer.step()`
+        # Wrap optimizer.step() to track step count
         def with_counter(method):
             if getattr(method, '_with_counter', False):
-                # `optimizer.step()` has already been replaced, return.
                 return method
 
-            # Keep a weak reference to the optimizer instance to prevent
-            # cyclic references.
             instance_ref = weakref.ref(method.__self__)
-            # Get the unbound method for the same purpose.
             func = method.__func__
             cls = instance_ref().__class__
             del method
@@ -319,8 +359,6 @@ class _LRScheduler(object):
                 wrapped = func.__get__(instance, cls)
                 return wrapped(*args, **kwargs)
 
-            # Note that the returned function here is no longer a bound method,
-            # so attributes like `__func__` and `__self__` no longer exist.
             wrapper._with_counter = True
             return wrapper
 
@@ -331,34 +369,24 @@ class _LRScheduler(object):
         self.step()
 
     def state_dict(self):
-        """Returns the state of the scheduler as a :class:`dict`.
-
-        It contains an entry for every variable in self.__dict__ which
-        is not the optimizer.
-        """
+        """Returns scheduler state as dict (excludes optimizer)"""
         return {key: value for key, value in self.__dict__.items() if key != 'optimizer'}
 
     def load_state_dict(self, state_dict):
-        """Loads the schedulers state.
-
-        Arguments:
-            state_dict (dict): scheduler state. Should be an object returned
-                from a call to :meth:`state_dict`.
-        """
+        """Loads scheduler state from dict"""
         self.__dict__.update(state_dict)
 
     def get_last_lr(self):
-        """ Return last computed learning rate by current scheduler.
-        """
+        """Return last computed learning rate"""
         return self._last_lr
 
     def get_lr(self):
-        # Compute learning rate using chainable form of the scheduler
+        """Compute learning rate (to be implemented by subclasses)"""
         raise NotImplementedError
 
     def step(self, epoch=None):
-        # Raise a warning if old pattern is detected
-        # https://github.com/pytorch/pytorch/issues/20124
+        """Update learning rate"""
+        # Warn if step order is incorrect
         if self._step_count == 1:
             if not hasattr(self.optimizer.step, "_with_counter"):
                 warnings.warn("Seems like `optimizer.step()` has been overridden after learning rate scheduler "
@@ -366,7 +394,6 @@ class _LRScheduler(object):
                               "`lr_scheduler.step()`. See more details at "
                               "https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate", UserWarning)
 
-            # Just check if there were two first lr_scheduler.step() calls before optimizer.step()
             elif self.optimizer._step_count < 1:
                 warnings.warn("Detected call of `lr_scheduler.step()` before `optimizer.step()`. "
                               "In PyTorch 1.1.0 and later, you should call them in the opposite order: "
@@ -377,7 +404,6 @@ class _LRScheduler(object):
         self._step_count += 1
 
         class _enable_get_lr_call:
-
             def __init__(self, o):
                 self.o = o
 
@@ -389,6 +415,7 @@ class _LRScheduler(object):
                 self.o._get_lr_called_within_step = False
                 return self
 
+        # Update learning rates
         with _enable_get_lr_call(self):
             if epoch is None:
                 self.last_epoch += 1
@@ -407,30 +434,9 @@ class _LRScheduler(object):
 
 
 class CosineAnnealingWarmRestarts(_LRScheduler):
-    r"""Set the learning rate of each parameter group using a cosine annealing
-    schedule, where :math:`\eta_{max}` is set to the initial lr, :math:`T_{cur}`
-    is the number of epochs since the last restart and :math:`T_{i}` is the number
-    of epochs between two warm restarts in SGDR:
-
-    .. math::
-        \eta_t = \eta_{min} + \frac{1}{2}(\eta_{max} - \eta_{min})\left(1 +
-        \cos\left(\frac{T_{cur}}{T_{i}}\pi\right)\right)
-
-    When :math:`T_{cur}=T_{i}`, set :math:`\eta_t = \eta_{min}`.
-    When :math:`T_{cur}=0` after restart, set :math:`\eta_t=\eta_{max}`.
-
-    It has been proposed in
-    `SGDR: Stochastic Gradient Descent with Warm Restarts`_.
-
-    Args:
-        optimizer (Optimizer): Wrapped optimizer.
-        T_0 (int): Number of iterations for the first restart.
-        T_mult (int, optional): A factor increases :math:`T_{i}` after a restart. Default: 1.
-        eta_min (float, optional): Minimum learning rate. Default: 0.
-        last_epoch (int, optional): The index of last epoch. Default: -1.
-
-    .. _SGDR\: Stochastic Gradient Descent with Warm Restarts:
-        https://arxiv.org/abs/1608.03983
+    """Cosine annealing scheduler with warm restarts (SGDR)
+    
+    Learning rate follows cosine curve and periodically restarts to initial value.
     """
 
     def __init__(self, optimizer, T_0, T_mult=1, eta_min=0, last_epoch=-1):
@@ -438,16 +444,16 @@ class CosineAnnealingWarmRestarts(_LRScheduler):
             raise ValueError("Expected positive integer T_0, but got {}".format(T_0))
         if T_mult < 1 or not isinstance(T_mult, int):
             raise ValueError("Expected integer T_mult >= 1, but got {}".format(T_mult))
-        self.T_0 = T_0
-        self.T_i = T_0
-        self.T_mult = T_mult
-        self.eta_min = eta_min
+        self.T_0 = T_0  # Initial restart period
+        self.T_i = T_0  # Current restart period
+        self.T_mult = T_mult  # Period multiplier after restart
+        self.eta_min = eta_min  # Minimum learning rate
 
         super(CosineAnnealingWarmRestarts, self).__init__(optimizer, last_epoch)
-
         self.T_cur = self.last_epoch
 
     def get_lr(self):
+        """Calculate learning rate using cosine annealing formula"""
         if not self._get_lr_called_within_step:
             warnings.warn("To get the last learning rate computed by the scheduler, "
                           "please use `get_last_lr()`.", DeprecationWarning)
@@ -456,47 +462,28 @@ class CosineAnnealingWarmRestarts(_LRScheduler):
                 for base_lr in self.base_lrs]
 
     def step(self, epoch=None):
-        """Step could be called after every batch update
-
-        Example:
-            >>> scheduler = CosineAnnealingWarmRestarts(optimizer, T_0, T_mult)
-            >>> iters = len(dataloader)
-            >>> for epoch in range(20):
-            >>>     for i, sample in enumerate(dataloader):
-            >>>         inputs, labels = sample['inputs'], sample['labels']
-            >>>         scheduler.step(epoch + i / iters)
-            >>>         optimizer.zero_grad()
-            >>>         outputs = net(inputs)
-            >>>         loss = criterion(outputs, labels)
-            >>>         loss.backward()
-            >>>         optimizer.step()
-
-        This function can be called in an interleaved way.
-
-        Example:
-            >>> scheduler = CosineAnnealingWarmRestarts(optimizer, T_0, T_mult)
-            >>> for epoch in range(20):
-            >>>     scheduler.step()
-            >>> scheduler.step(26)
-            >>> scheduler.step() # scheduler.step(27), instead of scheduler(20)
-        """
-
+        """Update learning rate and handle warm restarts"""
         if epoch is None and self.last_epoch < 0:
             epoch = 0
 
         if epoch is None:
+            # Increment step counter
             epoch = self.last_epoch + 1
             self.T_cur = self.T_cur + 1
+            
+            # Check if restart is needed
             if self.T_cur >= self.T_i:
                 self.T_cur = self.T_cur - self.T_i
                 self.T_i = self.T_i * self.T_mult
         else:
+            # Manual epoch setting
             if epoch < 0:
                 raise ValueError("Expected non-negative epoch, but got {}".format(epoch))
             if epoch >= self.T_0:
                 if self.T_mult == 1:
                     self.T_cur = epoch % self.T_0
                 else:
+                    # Calculate which restart cycle we're in
                     n = int(math.log((epoch / self.T_0 * (self.T_mult - 1) + 1), self.T_mult))
                     self.T_cur = epoch - self.T_0 * (self.T_mult ** n - 1) / (self.T_mult - 1)
                     self.T_i = self.T_0 * self.T_mult ** (n)
@@ -506,7 +493,6 @@ class CosineAnnealingWarmRestarts(_LRScheduler):
         self.last_epoch = math.floor(epoch)
 
         class _enable_get_lr_call:
-
             def __init__(self, o):
                 self.o = o
 
@@ -518,6 +504,7 @@ class CosineAnnealingWarmRestarts(_LRScheduler):
                 self.o._get_lr_called_within_step = False
                 return self
 
+        # Apply new learning rates
         with _enable_get_lr_call(self):
             for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
                 param_group['lr'] = lr
@@ -526,48 +513,56 @@ class CosineAnnealingWarmRestarts(_LRScheduler):
 
 
 def read_text(filename):
+    """Read text descriptions from Excel file and pad short descriptions"""
     df = pd.read_excel(filename)
     text = {}
-    for i in df.index.values:  # Gets the index of the row number and traverses it
+    for i in df.index.values:
         count = len(df.Description[i].split())
+        # Pad descriptions shorter than 9 words
         if count < 9:
             df.Description[i] = df.Description[i] + ' EOF XXX' * (9 - count)
         text[df.Image[i]] = df.Description[i]
-    return text  # return dict (key: values)
+    return text  # Dict mapping image names to descriptions
 
 
 def read_text_LV(filename):
+    """Read text descriptions from Excel file (LV variant with longer padding)"""
     df = pd.read_excel(filename)
     text = {}
-    for i in df.index.values:  # Gets the index of the row number and traverses it
+    for i in df.index.values:
         count = len(df.Description[i].split())
+        # Pad descriptions shorter than 30 words
         if count < 30:
-            df.Description[i] = df.Description[i] + ' EOF XXX' * (20 - count)  # LV_loss: 24
+            df.Description[i] = df.Description[i] + ' EOF XXX' * (20 - count)
         text[df.Image[i]] = df.Description[i]
-    return text  # return dict (key: values)
+    return text
 
 
-# Unification images processing
 def get_thum(image, size=(224, 224), greyscale=False):
+    """Resize image to thumbnail and optionally convert to grayscale"""
     image = image.resize(size, Image.ANTIALIAS)
     if greyscale:
         image = image.convert('L')
     return image
 
 
-# Calculate the cosine distance between pictures
 def img_similarity_vectors_via_numpy(image1, image2):
+    """Calculate cosine similarity between two images using pixel vectors"""
     image1 = get_thum(image1)
     image2 = get_thum(image2)
     images = [image1, image2]
     vectors = []
     norms = []
+    
+    # Convert images to vectors and calculate norms
     for image in images:
         vector = []
         for pixel_turple in image.getdata():
             vector.append(average(pixel_turple))
         vectors.append(vector)
         norms.append(linalg.norm(vector, 2))
+    
+    # Calculate cosine similarity
     a, b = vectors
     a_norm, b_norm = norms
     res = dot(a / a_norm, b / b_norm)

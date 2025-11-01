@@ -14,18 +14,19 @@ from transformers import BertTokenizer, BertModel
 
 
 class BertEmbeddingWrapper:
-    """Wrapper class to replace bert_embedding with transformers"""
-    def __init__(self, model_name='bert-base-uncased', use_cuda=False):  # Set to False
+    """Wrapper for BERT text embeddings using HuggingFace transformers"""
+    
+    def __init__(self, model_name='bert-base-uncased', use_cuda=False):
         self.tokenizer = BertTokenizer.from_pretrained(model_name)
         self.model = BertModel.from_pretrained(model_name)
         self.model.eval()  # Set to evaluation mode
         
-        # Always use CPU for DataLoader workers to avoid CUDA fork issues
+        # Always use CPU to avoid CUDA fork issues in DataLoader workers
         self.device = 'cpu'
         
     def __call__(self, sentences):
         """
-        Process sentences and return embeddings in a format similar to bert_embedding
+        Process sentences and return embeddings similar to bert_embedding format
         
         Args:
             sentences: List of sentences
@@ -37,24 +38,21 @@ class BertEmbeddingWrapper:
         
         with torch.no_grad():
             for sentence in sentences:
-                # Tokenize and encode
+                # Tokenize and encode the sentence
                 inputs = self.tokenizer(sentence, return_tensors='pt', 
                                        padding=True, truncation=True, max_length=512)
-                
-                # Keep on CPU
-                # inputs already on CPU by default
                 
                 # Get BERT embeddings
                 outputs = self.model(**inputs)
                 
-                # Get the embeddings from the last hidden state
+                # Extract embeddings from last hidden state
                 # Shape: [batch_size, sequence_length, hidden_size]
                 embeddings = outputs.last_hidden_state.squeeze(0)  # Remove batch dimension
                 
-                # Convert to numpy
+                # Convert to numpy array
                 embeddings_np = embeddings.numpy()
                 
-                # Get tokens for reference (optional)
+                # Get token strings for reference
                 tokens = self.tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
                 
                 results.append((tokens, embeddings_np))
@@ -63,6 +61,7 @@ class BertEmbeddingWrapper:
 
 
 def random_rot_flip(image, label):
+    """Apply random rotation (90° increments) and random flip"""
     k = np.random.randint(0, 4)
     image = np.rot90(image, k)
     label = np.rot90(label, k)
@@ -73,6 +72,7 @@ def random_rot_flip(image, label):
 
 
 def random_rotate(image, label):
+    """Apply random rotation within ±20 degrees"""
     angle = np.random.randint(-20, 20)
     image = ndimage.rotate(image, angle, order=0, reshape=False)
     label = ndimage.rotate(label, angle, order=0, reshape=False)
@@ -80,6 +80,8 @@ def random_rotate(image, label):
 
 
 class RandomGenerator(object):
+    """Data augmentation transform for training with random rotations/flips"""
+    
     def __init__(self, output_size):
         self.output_size = output_size
 
@@ -88,14 +90,19 @@ class RandomGenerator(object):
         image, label = image.astype(np.uint8), label.astype(np.uint8)
         image, label = F.to_pil_image(image), F.to_pil_image(label)
         x, y = image.size
+        
+        # Apply random augmentation (50% chance each)
         if random.random() > 0.5:
             image, label = random_rot_flip(image, label)
         elif random.random() > 0.5:
             image, label = random_rotate(image, label)
 
+        # Resize if dimensions don't match
         if x != self.output_size[0] or y != self.output_size[1]:
-            image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)  # why not 3?
+            image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)
             label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+        
+        # Convert to tensors
         image = F.to_tensor(image)
         label = to_long_tensor(label)
         text = torch.Tensor(text)
@@ -104,17 +111,23 @@ class RandomGenerator(object):
 
 
 class ValGenerator(object):
+    """Validation transform without augmentation, only resizing"""
+    
     def __init__(self, output_size):
         self.output_size = output_size
 
     def __call__(self, sample):
         image, label, text = sample['image'], sample['label'], sample['text']
-        image, label = image.astype(np.uint8), label.astype(np.uint8)  # OSIC
+        image, label = image.astype(np.uint8), label.astype(np.uint8)
         image, label = F.to_pil_image(image), F.to_pil_image(label)
         x, y = image.size
+        
+        # Resize if needed (no augmentation for validation)
         if x != self.output_size[0] or y != self.output_size[1]:
-            image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)  # why not 3?
+            image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)
             label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+        
+        # Convert to tensors
         image = F.to_tensor(image)
         label = to_long_tensor(label)
         text = torch.Tensor(text)
@@ -123,13 +136,13 @@ class ValGenerator(object):
 
 
 def to_long_tensor(pic):
-    # handle numpy array
+    """Convert numpy array to long tensor"""
     img = torch.from_numpy(np.array(pic, np.uint8))
-    # backward compatibility
     return img.long()
 
 
 def correct_dims(*images):
+    """Add channel dimension if image is 2D (grayscale)"""
     corr_images = []
     for img in images:
         if len(img.shape) == 2:
@@ -144,6 +157,8 @@ def correct_dims(*images):
 
 
 class LV2D(Dataset):
+    """Dataset for label-only data (no images) with text descriptions"""
+    
     def __init__(self, dataset_path: str, task_name: str, row_text: str, joint_transform: Callable = None,
                  one_hot_mask: int = False,
                  image_size: int = 224) -> None:
@@ -166,11 +181,10 @@ class LV2D(Dataset):
         return len(os.listdir(self.output_path))
 
     def __getitem__(self, idx):
-
-        mask_filename = self.mask_list[idx]  # Co
+        mask_filename = self.mask_list[idx]
         mask_path = os.path.join(self.output_path, mask_filename)
         
-        # Read mask
+        # Load and preprocess mask
         mask = cv2.imread(mask_path, 0)
         if mask is None:
             raise FileNotFoundError(f"Cannot read mask: {mask_path}")
@@ -180,13 +194,17 @@ class LV2D(Dataset):
         mask[mask > 0] = 1
         mask = correct_dims(mask)
         
+        # Get text description and generate BERT embeddings
         text = self.rowtext[mask_filename]
         text = text.split('\n')
         text_token = self.bert_embedding(text)
         text = np.array(text_token[0][1])
+        
+        # Truncate text embeddings to max 14 tokens
         if text.shape[0] > 14:
             text = text[:14, :]
             
+        # Convert mask to one-hot encoding if specified
         if self.one_hot_mask:
             assert self.one_hot_mask > 0, 'one_hot_mask must be nonnegative'
             mask = torch.zeros((self.one_hot_mask, mask.shape[1], mask.shape[2])).scatter_(0, mask.long(), 1)
@@ -197,6 +215,7 @@ class LV2D(Dataset):
 
 
 class ImageToImage2D(Dataset):
+    """Dataset for image segmentation with images, masks, and text descriptions"""
 
     def __init__(self, dataset_path: str, task_name: str, row_text: str, joint_transform: Callable = None,
                  one_hot_mask: int = False,
@@ -222,12 +241,13 @@ class ImageToImage2D(Dataset):
         return len(os.listdir(self.input_path))
 
     def __getitem__(self, idx):
-
+        # Get filenames based on dataset type
         if self.task_name == 'Covid19':
-            # For Covid19: use index to get corresponding files from each folder
-            image_filename = self.images_list[idx]  # Get image from img folder
-            mask_filename = self.mask_list[idx]      # Get mask from labelcol folder
+            # Covid19: use index for both image and mask lists
+            image_filename = self.images_list[idx]
+            mask_filename = self.mask_list[idx]
         else:  # MoNuSeg
+            # MoNuSeg: derive mask filename from image filename
             image_filename = self.images_list[idx]
             mask_filename = image_filename[: -3] + "png"
 
@@ -235,36 +255,43 @@ class ImageToImage2D(Dataset):
         image_path = os.path.join(self.input_path, image_filename)
         mask_path = os.path.join(self.output_path, mask_filename)
 
-        # Read image
+        # Load and resize image
         image = cv2.imread(image_path)
         if image is None:
             raise FileNotFoundError(f"Cannot read image: {image_path}")
         image = cv2.resize(image, (self.image_size, self.image_size))
 
-        # Read mask image
+        # Load and resize mask
         mask = cv2.imread(mask_path, 0)
         if mask is None:
             raise FileNotFoundError(f"Cannot read mask: {mask_path}")
         mask = cv2.resize(mask, (self.image_size, self.image_size))
+        
+        # Binarize mask
         mask[mask <= 0] = 0
         mask[mask > 0] = 1
 
-        # Correct dimensions if needed
+        # Ensure correct dimensions
         image, mask = correct_dims(image, mask)
 
+        # Get text description and generate BERT embeddings
         text = self.rowtext[mask_filename]
         text = text.split('\n')
         text_token = self.bert_embedding(text)
         text = np.array(text_token[0][1])
+        
+        # Truncate text embeddings to max 10 tokens
         if text.shape[0] > 10:
             text = text[:10, :]
 
+        # Convert mask to one-hot encoding if specified
         if self.one_hot_mask:
             assert self.one_hot_mask > 0, 'one_hot_mask must be nonnegative'
             mask = torch.zeros((self.one_hot_mask, mask.shape[1], mask.shape[2])).scatter_(0, mask.long(), 1)
 
         sample = {'image': image, 'label': mask, 'text': text}
 
+        # Apply transforms (augmentation/normalization)
         if self.joint_transform:
             sample = self.joint_transform(sample)
 
