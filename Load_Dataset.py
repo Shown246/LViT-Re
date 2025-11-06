@@ -10,55 +10,52 @@ from typing import Callable
 import os
 import cv2
 from scipy import ndimage
-from transformers import BertTokenizer, BertModel
+from transformers import BertModel, BertTokenizer
+import numpy as np
+import pandas as pd
+from getEm import get_embeddings
 
+# class BertEmbeddingWrapper:
+#     def __init__(self, model_name='microsoft/BiomedVLP-CXR-BERT-specialized', use_cuda=True):
+#         self.tokenizer = BertTokenizer.from_pretrained(model_name)
+#         self.model = BertModel.from_pretrained(model_name)
+#         self.model.eval()
 
-class BertEmbeddingWrapper:
-    """Wrapper for BERT text embeddings using HuggingFace transformers"""
-    
-    def __init__(self, model_name='bert-base-uncased', use_cuda=False):
-        self.tokenizer = BertTokenizer.from_pretrained(model_name)
-        self.model = BertModel.from_pretrained(model_name)
-        self.model.eval()  # Set to evaluation mode
-        
-        # Always use CPU to avoid CUDA fork issues in DataLoader workers
-        self.device = 'cpu'
-        
-    def __call__(self, sentences):
-        """
-        Process sentences and return embeddings similar to bert_embedding format
-        
-        Args:
-            sentences: List of sentences
+#         # device logic
+#         if use_cuda and torch.cuda.is_available():
+#             self.device = 'cuda'
+#         else:
+#             self.device = 'cpu'
             
-        Returns:
-            List of tuples containing (tokens, embeddings)
-        """
-        results = []
-        
-        with torch.no_grad():
-            for sentence in sentences:
-                # Tokenize and encode the sentence
-                inputs = self.tokenizer(sentence, return_tensors='pt', 
-                                       padding=True, truncation=True, max_length=512)
-                
-                # Get BERT embeddings
-                outputs = self.model(**inputs)
-                
-                # Extract embeddings from last hidden state
-                # Shape: [batch_size, sequence_length, hidden_size]
-                embeddings = outputs.last_hidden_state.squeeze(0)  # Remove batch dimension
-                
-                # Convert to numpy array
-                embeddings_np = embeddings.numpy()
-                
-                # Get token strings for reference
-                tokens = self.tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
-                
-                results.append((tokens, embeddings_np))
-        
-        return results
+#         # self.device = 'cpu'
+#         print(f"BertEmbeddingWrapper using device: {self.device}")
+#         self.model.to(self.device)
 
+#     def __call__(self, sentences):
+#         results = []
+#         with torch.no_grad():
+#             # batch tokenize
+#             inputs = self.tokenizer(
+#                 sentences,
+#                 return_tensors='pt',
+#                 padding=True,
+#                 truncation=True,
+#                 max_length=512
+#             ).to(self.device)
+
+#             outputs = self.model(**inputs)
+#             last_hidden = outputs.last_hidden_state          # [B, T, D]
+
+#             # loop per item to match your old return structure
+#             for i in range(last_hidden.shape[0]):
+#                 token_ids = inputs['input_ids'][i].cpu()
+#                 tokens = self.tokenizer.convert_ids_to_tokens(token_ids)
+
+#                 token_embeddings = last_hidden[i].cpu().numpy()
+#                 results.append((tokens, token_embeddings))
+
+#         print(results)
+#         return results
 
 def random_rot_flip(image, label):
     """Apply random rotation (90° increments) and random flip"""
@@ -169,7 +166,7 @@ class LV2D(Dataset):
         self.one_hot_mask = one_hot_mask
         self.rowtext = row_text
         self.task_name = task_name
-        self.bert_embedding = BertEmbeddingWrapper()
+        # self.bert_embedding = BertEmbeddingWrapper()
 
         if joint_transform:
             self.joint_transform = joint_transform
@@ -229,7 +226,7 @@ class ImageToImage2D(Dataset):
         self.one_hot_mask = one_hot_mask
         self.rowtext = row_text
         self.task_name = task_name
-        self.bert_embedding = BertEmbeddingWrapper()
+        # self.bert_embedding = BertEmbeddingWrapper()
 
         if joint_transform:
             self.joint_transform = joint_transform
@@ -251,6 +248,8 @@ class ImageToImage2D(Dataset):
             image_filename = self.images_list[idx]
             mask_filename = image_filename[: -3] + "png"
 
+        print(f"Processing image: {image_filename}, mask: {mask_filename}")
+        text_token = get_embeddings(mask_filename)
         # Build full paths
         image_path = os.path.join(self.input_path, image_filename)
         mask_path = os.path.join(self.output_path, mask_filename)
@@ -277,10 +276,12 @@ class ImageToImage2D(Dataset):
         # Get text description and generate BERT embeddings
         text = self.rowtext[mask_filename]
         text = text.split('\n')
-        text_token = self.bert_embedding(text)
+        # text_token = self.bert_embedding(text)
         text = np.array(text_token[0][1])
         
         # Truncate text embeddings to max 10 tokens
+        # In your data loading or preprocessing
+        print(f"Text shape: {text.shape}")  # Should be [batch, 10, seq_len]
         if text.shape[0] > 10:
             text = text[:10, :]
 
