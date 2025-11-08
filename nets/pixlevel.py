@@ -1,11 +1,6 @@
-# -*- coding: utf-8 -*-
-
 import torch
 import torch.nn as nn
-
 '''pixel-level module'''
-
-
 class PixLevelModule(nn.Module):
     def __init__(self, in_channels):
         super(PixLevelModule, self).__init__()

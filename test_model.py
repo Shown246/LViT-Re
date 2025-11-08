@@ -8,41 +8,23 @@ import Config as config
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
-from nets.LViT import LViT
+from nets.LViT_new import LViTN
 from utils import *
 import cv2
 
-
 def show_image_with_dice(predict_save, labs, save_path):
-    """
-    Calculate Dice and IoU scores and save the prediction image
-    
-    Args:
-        predict_save: Binary prediction mask
-        labs: Ground truth labels
-        save_path: Path to save the prediction image
-        
-    Returns:
-        dice_pred: Dice coefficient
-        iou_pred: IoU (Jaccard) score
-    """
-    tmp_lbl = (labs).astype(np.float32)
-    tmp_3dunet = (predict_save).astype(np.float32)
-    
-    # Calculate Dice coefficient
+    tmp_lbl = labs.astype(np.float32)
+    tmp_3dunet = predict_save.astype(np.float32)
+
+    # <<< ADD THIS >>>
+    tmp_lbl = (tmp_lbl > 0.5).astype(np.uint8)
+    tmp_3dunet = (tmp_3dunet > 0.5).astype(np.uint8)
+    # <<< ADD THIS >>>
+
     dice_pred = 2 * np.sum(tmp_lbl * tmp_3dunet) / (np.sum(tmp_lbl) + np.sum(tmp_3dunet) + 1e-5)
-    
-    # Calculate IoU (Jaccard score)
     iou_pred = jaccard_score(tmp_lbl.reshape(-1), tmp_3dunet.reshape(-1))
-    
-    # Special handling for MoNuSeg: upscale to higher resolution
-    if config.task_name == "MoNuSeg":
-        predict_save = cv2.pyrUp(predict_save, (448, 448))
-        predict_save = cv2.resize(predict_save, (2000, 2000))
-        cv2.imwrite(save_path, predict_save * 255)
-    else:
-        cv2.imwrite(save_path, predict_save * 255)
-    
+
+    cv2.imwrite(save_path, tmp_3dunet * 255)
     return dice_pred, iou_pred
 
 
@@ -68,16 +50,21 @@ def vis_and_save_heatmap(model, input_img, text, img_RGB, labs, vis_save_path, d
 
     # Forward pass through model
     output = model(input_img.cuda(), text.cuda())
-    
-    # Threshold predictions at 0.5
-    pred_class = torch.where(output > 0.5, torch.ones_like(output), torch.zeros_like(output))
-    predict_save = pred_class[0].cpu().data.numpy()
-    predict_save = np.reshape(predict_save, (config.img_size, config.img_size))
-    
-    # Save prediction and calculate metrics
-    dice_pred_tmp, iou_tmp = show_image_with_dice(predict_save, labs,
-                                                  save_path=vis_save_path + '_predict' + model_type + '.jpg')
+    main_logits = output["out"]           # [1,1,56,56]
+    probs = torch.sigmoid(main_logits)
+    pred_class = (probs > 0.5).float()
+
+    pred_np = pred_class[0,0].cpu().numpy()                                # [56,56]
+    pred_up = cv2.resize(pred_np, (config.img_size, config.img_size))      # [224,224]
+
+    predict_save = pred_up
+    dice_pred_tmp, iou_tmp = show_image_with_dice(
+            predict_save,
+            labs,
+            save_path=vis_save_path + '_predict' + model_type + '.jpg'
+    )
     return dice_pred_tmp, iou_tmp
+
 
 
 if __name__ == '__main__':
@@ -107,11 +94,11 @@ if __name__ == '__main__':
     # Initialize model based on type
     if model_type == 'LViT':
         config_vit = config.get_CTranS_config()
-        model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
+        model = LViTN(config_vit, n_channels=config.n_channels, n_classes=config.n_labels, img_size=224, backbone_name='convnext_tiny', backbone_pretrained=True)
 
     elif model_type == 'LViT_pretrain':
         config_vit = config.get_CTranS_config()
-        model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
+        model = LViTN(config_vit, n_channels=config.n_channels, n_classes=config.n_labels, img_size=224, backbone_name='convnext_tiny', backbone_pretrained=True)
 
     else:
         raise TypeError('Please enter a valid name for the model type')

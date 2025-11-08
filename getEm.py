@@ -27,7 +27,7 @@ def get_embeddings(image_name):
     emb = embeddings[idx, :L, :].to(device)   # token-level embeddings
     tokens = tokens_list[idx]
     final_result = [(tokens, emb.cpu().numpy())]
-    print(final_result)
+    # print(final_result)
     return final_result
     # for img_name in all_imgs:
       # idx = index_map[img_name]

@@ -14,64 +14,75 @@ from numpy import average, dot, linalg
 from torch.autograd import Variable
 from torch.optim.optimizer import Optimizer
 
+
+def _flatten_pair(logit, truth):
+    """
+    Enforce same shape, then flatten to (B, N).
+    """
+    # ensure NHWC correctness (if someone passes torch.long mask -> convert)
+    if truth.dtype != torch.float32:
+        truth = truth.float()
+
+    # make sure shapes match before flatten — interpolation already done upstream
+    B = logit.shape[0]
+    logit_flat = logit.reshape(B, -1)
+    truth_flat = truth.reshape(B, -1)
+
+    return logit_flat, truth_flat
+
+
 class WeightedBCE(nn.Module):
-    """Weighted Binary Cross Entropy loss with configurable positive/negative class weights"""
-    
-    def __init__(self, weights=[0.4, 0.6]):
-        super(WeightedBCE, self).__init__()
+    def __init__(self, weights=(0.5,0.5)):
+        super().__init__()
         self.weights = weights
 
     def forward(self, logit_pixel, truth_pixel):
-        # Flatten predictions and ground truth
-        logit = logit_pixel.view(-1)
-        truth = truth_pixel.view(-1)
-        assert (logit.shape == truth.shape)
-        
-        # Calculate binary cross entropy
+        logit, truth = _flatten_pair(logit_pixel, truth_pixel)
+
         loss = F.binary_cross_entropy(logit, truth, reduction='none')
-        
-        # Separate positive and negative samples
+
         pos = (truth > 0.5).float()
-        neg = (truth < 0.5).float()
-        pos_weight = pos.sum().item() + 1e-12
-        neg_weight = neg.sum().item() + 1e-12
-        
-        # Apply weighted loss normalized by class frequency
-        loss = (self.weights[0] * pos * loss / pos_weight + self.weights[1] * neg * loss / neg_weight).sum()
+        neg = (truth <=0.5).float()
+
+        pos_count = pos.sum().clamp(min=1e-6)
+        neg_count = neg.sum().clamp(min=1e-6)
+
+        loss = ( self.weights[0] * pos * loss / pos_count +
+                 self.weights[1] * neg * loss / neg_count ).sum()
+
         return loss
 
 
 class WeightedDiceLoss(nn.Module):
-    """Dice loss with pixel-level weighting based on ground truth"""
-    
-    def __init__(self, weights=[0.5, 0.5]):  # W_pos=0.8, W_neg=0.2
-        super(WeightedDiceLoss, self).__init__()
-        self.weights = weights
+    def __init__(self):
+        super().__init__()
 
     def forward(self, logit, truth, smooth=1e-5):
-        batch_size = len(logit)
-        logit = logit.view(batch_size, -1)
-        truth = truth.view(batch_size, -1)
-        assert (logit.shape == truth.shape)
-        
-        p = logit.view(batch_size, -1)
-        t = truth.view(batch_size, -1)
-        
-        # Create weight map based on ground truth values
-        w = truth.detach()
-        w = w * (self.weights[1] - self.weights[0]) + self.weights[0]
-        
-        # Apply weights to predictions and targets
-        p = w * (p)
-        t = w * (t)
-        
-        # Calculate Dice coefficient
-        intersection = (p * t).sum(-1)
-        union = (p * p).sum(-1) + (t * t).sum(-1)
-        dice = 1 - (2 * intersection + smooth) / (union + smooth)
+        p, t = _flatten_pair(logit, truth)
+        intersection = (p * t).sum(1)
+        union = (p*p).sum(1) + (t*t).sum(1)
+        dice = 1 - (2 * intersection + smooth)/(union + smooth)
+        return dice.mean()
 
-        loss = dice.mean()
-        return loss
+
+class WeightedDiceBCE(nn.Module):
+    def __init__(self, dice_weight=1.0, BCE_weight=1.0):
+        super().__init__()
+        self.dice = WeightedDiceLoss()
+        self.bce  = WeightedBCE(weights=(0.5,0.5))
+        self.dice_w = dice_weight
+        self.bce_w  = BCE_weight
+
+    @torch.no_grad()
+    def _show_dice(self, inputs, targets):
+        """hard dice for logging"""
+        inputs = (inputs>=0.5).float()
+        targets = (targets>0.5).float()
+        return 1.0 - self.dice(inputs, targets)
+
+    def forward(self, inputs, targets):
+        return self.dice_w * self.dice(inputs, targets) + \
+               self.bce_w  * self.bce(inputs, targets)
 
 
 class BinaryDiceLoss(nn.Module):
@@ -224,31 +235,6 @@ class WeightedDiceBCE_unsup(nn.Module):
         dice_BCE_loss = self.dice_weight * dice + self.BCE_weight * BCE + 0.1 * LV_loss
         return dice_BCE_loss
 
-
-class WeightedDiceBCE(nn.Module):
-    """Combined Dice and BCE loss for binary segmentation"""
-    
-    def __init__(self, dice_weight=1, BCE_weight=1):
-        super(WeightedDiceBCE, self).__init__()
-        self.BCE_loss = WeightedBCE(weights=[0.5, 0.5])
-        self.dice_loss = WeightedDiceLoss(weights=[0.5, 0.5])
-        self.BCE_weight = BCE_weight
-        self.dice_weight = dice_weight
-
-    def _show_dice(self, inputs, targets):
-        """Threshold predictions and calculate hard Dice coefficient"""
-        inputs[inputs >= 0.5] = 1
-        inputs[inputs < 0.5] = 0
-        targets[targets > 0] = 1
-        targets[targets <= 0] = 0
-        hard_dice_coeff = 1.0 - self.dice_loss(inputs, targets)
-        return hard_dice_coeff
-
-    def forward(self, inputs, targets):
-        dice = self.dice_loss(inputs, targets)
-        BCE = self.BCE_loss(inputs, targets)
-        dice_BCE_loss = self.dice_weight * dice + self.BCE_weight * BCE
-        return dice_BCE_loss
 
 
 def auc_on_batch(masks, pred):

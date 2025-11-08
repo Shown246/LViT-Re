@@ -54,7 +54,6 @@ from getEm import get_embeddings
 #                 token_embeddings = last_hidden[i].cpu().numpy()
 #                 results.append((tokens, token_embeddings))
 
-#         print(results)
 #         return results
 
 def random_rot_flip(image, label):
@@ -248,7 +247,7 @@ class ImageToImage2D(Dataset):
             image_filename = self.images_list[idx]
             mask_filename = image_filename[: -3] + "png"
 
-        print(f"Processing image: {image_filename}, mask: {mask_filename}")
+        # print(f"Processing image: {image_filename}, mask: {mask_filename}")
         text_token = get_embeddings(mask_filename)
         # Build full paths
         image_path = os.path.join(self.input_path, image_filename)
@@ -281,7 +280,7 @@ class ImageToImage2D(Dataset):
         
         # Truncate text embeddings to max 10 tokens
         # In your data loading or preprocessing
-        print(f"Text shape: {text.shape}")  # Should be [batch, 10, seq_len]
+        # print(f"Text shape: {text.shape}")  # Should be [batch, 10, seq_len]
         if text.shape[0] > 10:
             text = text[:10, :]
 

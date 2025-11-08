@@ -1,36 +1,46 @@
+# Config.py
 # -*- coding: utf-8 -*-
 import os
 import torch
-import time
 import ml_collections
 
-## PARAMETERS OF THE MODEL
-save_model = True
-tensorboard = True
+# ======================================================
+# GLOBAL SETTINGS
+# ======================================================
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-use_cuda = torch.cuda.is_available()
 seed = 666
 os.environ['PYTHONHASHSEED'] = str(seed)
 
-cosineLR = True  # Use cosineLR or not
-n_channels = 3
-n_labels = 1  # MoNuSeg & Covid19
-epochs = 2
-img_size = 224
+deterministic = True
+use_cuda = torch.cuda.is_available()
+
+# ======================================================
+# TRAIN SETTINGS
+# ======================================================
+task_name       = 'Covid19'      # 'MoNuSeg' or 'Covid19'
+model_name      = 'LViT'
+epochs          = 3
+img_size        = 224
+batch_size      = 2
+learning_rate   = 3e-4           # Covid19 recommended 3e-4, MoNuSeg is usually 1e-3
+
 print_frequency = 1
-save_frequency = 5000
-vis_frequency = 10
+vis_frequency   = 1
+save_after_epoch = 1             # only start saving best after this epoch
 early_stopping_patience = 50
 
-pretrain = False  # Use the pre-trained weights on ImageNet
-# task_name = 'MoNuSeg' 
-task_name = 'Covid19'
-learning_rate = 3e-3  # MoNuSeg: 1e-3, Covid19: 3e-4
-batch_size = 2  # For LViT-T, 2 is better than 4
+num_workers     = 8
+use_dataparallel = True
+profile_model   = False          # enable THOP or not
+pretrain        = False
+cosineLR        = True
 
-model_name = 'LViT'
-# model_name = 'LViT_pretrain'
+tensorboard     = True
+save_model      = True
 
+# ======================================================
+# PATHS
+# ======================================================
 train_dataset = './datasets/' + task_name + '/Train_Folder/'
 val_dataset = './datasets/' + task_name + '/Val_Folder/'
 test_dataset = './datasets/' + task_name + '/Test_Folder/'
@@ -42,25 +52,34 @@ tensorboard_folder = save_path + 'tensorboard_logs/'
 logger_path = save_path + session_name + ".log"
 visualize_path = save_path + 'visualize_val/'
 
+test_session   = session_name
 
-##########################################################################
-# CTrans configs
-##########################################################################
+n_channels     = 3
+n_labels       = 1   # binary mask
+
+# ======================================================
+# DEEP SUPERVISION HEAD WEIGHTS
+# coarse -> mid -> fine   (list length must match ds_levels)
+# ======================================================
+ds_weights = (0.2, 0.3, 0.4)
+
+# ======================================================
+# VIT CONFIG
+# ======================================================
 def get_CTranS_config():
-    config = ml_collections.ConfigDict()
-    config.transformer = ml_collections.ConfigDict()
-    config.KV_size = 960  # KV_size = Q1 + Q2 + Q3 + Q4
-    config.transformer.num_heads = 4
-    config.transformer.num_layers = 4
-    config.expand_ratio = 4  # MLP channel dimension expand ratio
-    config.transformer.embeddings_dropout_rate = 0.1
-    config.transformer.attention_dropout_rate = 0.1
-    config.transformer.dropout_rate = 0
-    config.patch_sizes = [16, 8, 4, 2]
-    config.base_channel = 64  # base channel of U-Net
-    config.n_classes = 1
-    return config
+    cfg = ml_collections.ConfigDict()
+    cfg.transformer = ml_collections.ConfigDict()
 
+    cfg.KV_size = 960
+    cfg.transformer.num_heads = 4
+    cfg.transformer.num_layers = 4
+    cfg.transformer.embeddings_dropout_rate = 0.1
+    cfg.transformer.attention_dropout_rate = 0.1
+    cfg.transformer.dropout_rate = 0
 
-# used in testing phase, copy the session name in training phase
-# test_session = "Test_session_05.23_14h19"  # dice=79.98, IoU=66.83
+    cfg.base_channel = 64      # base U-Net channel
+    cfg.n_classes = 1
+    cfg.expand_ratio = 4
+    cfg.patch_sizes = [16, 8, 4, 2]
+
+    return cfg
