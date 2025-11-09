@@ -1,6 +1,6 @@
 # Train_model.py
 # Clean training script with deep supervision support.
-
+from getEm import init_embeddings
 import os
 import time
 import random
@@ -21,6 +21,9 @@ from Load_Dataset import RandomGenerator, ValGenerator, ImageToImage2D
 from utils import CosineAnnealingWarmRestarts, WeightedDiceBCE, read_text, save_on_batch
 from nets.LViT_new import LViTN
 from Train_one_epoch import print_summary
+
+torch.multiprocessing.set_start_method('spawn', force=True)
+init_embeddings()
 # Optional profiling
 try:
     from thop import profile
